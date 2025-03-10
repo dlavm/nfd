@@ -4,9 +4,9 @@ const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const ADMIN_UID = ENV_ADMIN_UID // your user id, get it from https://t.me/username_to_id_bot
 
 const NOTIFY_INTERVAL = 3600 * 1000;
-const fraudDb = 'https://raw.githubusercontent.com/LloydAsp/nfd/main/data/fraud.db';
-const notificationUrl = 'https://raw.githubusercontent.com/LloydAsp/nfd/main/data/notification.txt'
-const startMsgUrl = 'https://raw.githubusercontent.com/LloydAsp/nfd/main/data/startMessage.md';
+const fraudDb = 'https://raw.githubusercontent.com/dlavm/nfd/main/data/fraud.db';
+const notificationUrl = 'https://raw.githubusercontent.com/dlavm/nfd/main/data/notification.txt'
+const startMsgUrl = 'https://raw.githubusercontent.com/dlavm/nfd/main/data/startMessage.md';
 
 const enable_notification = true
 /**
@@ -110,13 +110,13 @@ async function onMessage (message) {
         text:'使用方法，回复转发的消息，并发送回复消息，或者`/block`、`/unblock`、`/checkblock`等指令'
       })
     }
-    if(/^\/block$/.exec(message.text)){
+    if(message.text && message.text.startsWith('/block')){
       return handleBlock(message)
     }
-    if(/^\/unblock$/.exec(message.text)){
+    if(message.text && message.text === '/unblock'){
       return handleUnBlock(message)
     }
-    if(/^\/checkblock$/.exec(message.text)){
+    if(message.text && message.text === '/checkblock'){
       return checkBlock(message)
     }
     let guestChantId = await nfd.get('msg-map-' + message?.reply_to_message.message_id,
@@ -134,33 +134,38 @@ async function handleGuestMessage(message){
   let chatId = message.chat.id;
   let isBlocked = await nfd.get('isblocked-' + chatId, { type: "json" })
   
-  if(isBlocked?.blocked){
+  if(isBlocked){
     return sendMessage({
       chat_id: chatId,
       text: 'You are blocked'
     })
   }
   
+  // 用户信息汇总
   let forwardText = `💬 来自: ${message.from.first_name}`;
   if (message.from.username) {
     forwardText += ` (@${message.from.username})`;
   }
   forwardText += `\n🆔 用户 ID: ${message.from.id}`;
   
+  // 发送用户信息
   await sendMessage({
     chat_id: ADMIN_UID,
-    text: forwardText
+    text: forwardText,
+    parse_mode: 'Markdown'
   });
   
+  // 转发原始消息
   let forwardReq = await forwardMessage({
     chat_id: ADMIN_UID,
-    from_chat_id: message.chat.id,
+    from_chat_id: chatId,
     message_id: message.message_id
   });
   
   if(forwardReq.ok){
     await nfd.put('msg-map-' + forwardReq.result.message_id, chatId)
   }
+  
   return handleNotify(message)
 }
 
@@ -195,8 +200,9 @@ async function handleBlock(message){
     })
   }
   
-  let reason = message.text.replace(/^\/block\s*/, '') || '无理由';
-  await nfd.put('isblocked-' + guestChatId, { blocked: true, reason: reason })
+  // 修复问题1：正确获取屏蔽原因
+  let reason = message.text.substring(6).trim() || '无理由';
+  await nfd.put('isblocked-' + guestChatId, JSON.stringify({ blocked: true, reason: reason }))
   
   return sendMessage({
     chat_id: ADMIN_UID,
@@ -220,7 +226,20 @@ async function checkBlock(message){
   let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" })
   let blockData = await nfd.get('isblocked-' + guestChatId, { type: "json" })
   
-  let responseText = `UID:${guestChatId} ` + (blockData?.blocked ? `已被屏蔽\n原因: ${blockData.reason}` : '未被屏蔽');
+  let responseText = `UID:${guestChatId} `;
+  
+  // 修复问题1：正确解析屏蔽信息
+  if (blockData) {
+    try {
+      const blockInfo = typeof blockData === 'string' ? JSON.parse(blockData) : blockData;
+      responseText += `已被屏蔽\n原因: ${blockInfo.reason || '无理由'}`;
+    } catch (e) {
+      responseText += '已被屏蔽，但无法获取详细信息';
+    }
+  } else {
+    responseText += '未被屏蔽';
+  }
+  
   return sendMessage({
     chat_id: ADMIN_UID,
     text: responseText

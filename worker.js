@@ -132,21 +132,32 @@ async function onMessage (message) {
 
 async function handleGuestMessage(message){
   let chatId = message.chat.id;
-  let isblocked = await nfd.get('isblocked-' + chatId, { type: "json" })
+  let isBlocked = await nfd.get('isblocked-' + chatId, { type: "json" })
   
-  if(isblocked){
+  if(isBlocked?.blocked){
     return sendMessage({
       chat_id: chatId,
-      text:'Your are blocked'
+      text: 'You are blocked'
     })
   }
-
+  
+  let forwardText = `💬 来自: ${message.from.first_name}`;
+  if (message.from.username) {
+    forwardText += ` (@${message.from.username})`;
+  }
+  forwardText += `\n🆔 用户 ID: ${message.from.id}`;
+  
+  await sendMessage({
+    chat_id: ADMIN_UID,
+    text: forwardText
+  });
+  
   let forwardReq = await forwardMessage({
-    chat_id:ADMIN_UID,
-    from_chat_id:message.chat.id,
-    message_id:message.message_id
-  })
-  console.log(JSON.stringify(forwardReq))
+    chat_id: ADMIN_UID,
+    from_chat_id: message.chat.id,
+    message_id: message.message_id
+  });
+  
   if(forwardReq.ok){
     await nfd.put('msg-map-' + forwardReq.result.message_id, chatId)
   }
@@ -176,19 +187,20 @@ async function handleNotify(message){
 }
 
 async function handleBlock(message){
-  let guestChantId = await nfd.get('msg-map-' + message.reply_to_message.message_id,
-                                      { type: "json" })
-  if(guestChantId === ADMIN_UID){
+  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" })
+  if(guestChatId === ADMIN_UID){
     return sendMessage({
       chat_id: ADMIN_UID,
       text:'不能屏蔽自己'
     })
   }
-  await nfd.put('isblocked-' + guestChantId, true)
-
+  
+  let reason = message.text.replace(/^\/block\s*/, '') || '无理由';
+  await nfd.put('isblocked-' + guestChatId, { blocked: true, reason: reason })
+  
   return sendMessage({
     chat_id: ADMIN_UID,
-    text: `UID:${guestChantId}屏蔽成功`,
+    text: `UID:${guestChatId} 屏蔽成功\n原因: ${reason}`,
   })
 }
 
@@ -205,13 +217,13 @@ async function handleUnBlock(message){
 }
 
 async function checkBlock(message){
-  let guestChantId = await nfd.get('msg-map-' + message.reply_to_message.message_id,
-  { type: "json" })
-  let blocked = await nfd.get('isblocked-' + guestChantId, { type: "json" })
-
+  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" })
+  let blockData = await nfd.get('isblocked-' + guestChatId, { type: "json" })
+  
+  let responseText = `UID:${guestChatId} ` + (blockData?.blocked ? `已被屏蔽\n原因: ${blockData.reason}` : '未被屏蔽');
   return sendMessage({
     chat_id: ADMIN_UID,
-    text: `UID:${guestChantId}` + (blocked ? '被屏蔽' : '没有被屏蔽')
+    text: responseText
   })
 }
 

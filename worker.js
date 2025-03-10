@@ -107,16 +107,16 @@ async function onMessage (message) {
     if(!message?.reply_to_message?.chat){
       return sendMessage({
         chat_id:ADMIN_UID,
-        text:'使用方法，回复转发的消息，并发送回复消息，或者`/b`、`/ub`、`/cb`等指令'
+        text:'使用方法，回复转发的消息，并发送回复消息，或者`/block`、`/unblock`、`/checkblock`等指令'
       })
     }
-    if(/^\/b$/.exec(message.text)){
+    if(/^\/block$/.exec(message.text)){
       return handleBlock(message)
     }
-    if(/^\/ub$/.exec(message.text)){
+    if(/^\/unblock$/.exec(message.text)){
       return handleUnBlock(message)
     }
-    if(/^\/cb$/.exec(message.text)){
+    if(/^\/checkblock$/.exec(message.text)){
       return checkBlock(message)
     }
     let guestChantId = await nfd.get('msg-map-' + message?.reply_to_message.message_id,
@@ -195,7 +195,7 @@ async function handleBlock(message){
     })
   }
   
-  let reason = message.text.replace(/^\/b\s*/, '') || '无理由';
+  let reason = message.text.replace(/^\/block\s*/, '') || '无理由';
   await nfd.put('isblocked-' + guestChatId, { blocked: true, reason: reason })
   
   return sendMessage({

@@ -104,57 +104,37 @@ async function onMessage (message) {
     })
   }
   if(message.chat.id.toString() === ADMIN_UID){
-    // 处理查看屏蔽列表的命令
-    if(message.text && message.text === '/blocklist'){
-      return listBlocked(message)
-    }
-    
-    // 处理不需要回复消息的 block/unblock 命令
-    if(message.text && message.text.startsWith('/block ')){
-      const parts = message.text.split(' ')
-      if(parts.length >= 2 && /^\d+$/.test(parts[1])){
-        return handleBlockById(message, parts[1], parts.slice(2).join(' '))
-      }
-    }
-    
-    if(message.text && message.text.startsWith('/unblock ')){
-      const parts = message.text.split(' ')
-      if(parts.length >= 2 && /^\d+$/.test(parts[1])){
-        return handleUnBlockById(message, parts[1])
-      }
-    }
-    
-    // 处理需要回复消息的命令
-    if(message?.reply_to_message?.chat){
-      if(message.text && message.text.startsWith('/block')){
-        return handleBlock(message)
-      }
-      if(message.text && message.text === '/unblock'){
-        return handleUnBlock(message)
-      }
-      if(message.text && message.text === '/checkblock'){
-        return checkBlock(message)
-      }
-      
-      let guestChantId = await nfd.get('msg-map-' + message?.reply_to_message.message_id,
-                                        { type: "json" })
-      return copyMessage({
-        chat_id: guestChantId,
-        from_chat_id:message.chat.id,
-        message_id:message.message_id,
+    if(!message?.reply_to_message?.chat){
+      return sendMessage({
+        chat_id:ADMIN_UID,
+        text:'使用方法，回复转发的消息，并发送回复消息，或者`/block`、`/unblock`、`/checkblock`等指令'
       })
     }
-    
-    return sendMessage({
-      chat_id:ADMIN_UID,
-      text:'使用方法：\n'
-          + '1. 回复转发的消息，并发送回复消息\n'
-          + '2. `/block [原因]` - 屏蔽用户（回复消息时）\n'
-          + '3. `/unblock` - 解除屏蔽（回复消息时）\n'
-          + '4. `/checkblock` - 检查屏蔽状态（回复消息时）\n'
-          + '5. `/block 用户ID [原因]` - 直接屏蔽指定用户ID\n'
-          + '6. `/unblock 用户ID` - 直接解除指定用户ID的屏蔽\n'
-          + '7. `/blocklist` - 查看所有已屏蔽的用户'
+    if(message.text && message.text.startsWith('/block')){
+      return handleBlock(message)
+    }
+    if(message.text && message.text === '/unblock'){
+      return handleUnBlock(message)
+    }
+    if(message.text && message.text === '/checkblock'){
+      return checkBlock(message)
+    }
+    if(message.text && message.text.startsWith('/tag')){
+      return handleTag(message)
+    }
+    if(message.text && message.text.startsWith('/untag')){
+      return handleUnTag(message)
+    }
+    if(message.text && message.text === '/checktag'){
+      return checkTag(message)
+    }
+
+    let guestChantId = await nfd.get('msg-map-' + message?.reply_to_message.message_id,
+                                      { type: "json" })
+    return copyMessage({
+      chat_id: guestChantId,
+      from_chat_id:message.chat.id,
+      message_id:message.message_id,
     })
   }
   return handleGuestMessage(message)
@@ -195,8 +175,27 @@ async function handleGuestMessage(message){
   if(forwardReq.ok){
     await nfd.put('msg-map-' + forwardReq.result.message_id, chatId)
   }
+
+  // 判断是否是标记用户，如果是，立即提醒管理员
+  let tagData = await nfd.get('istagged-' + chatId, { type: "json" })
+  if(tagData){
+    try {
+      let tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
+      let tagMessage = `🔖 已标记用户消息提醒:\nUID: ${chatId}`;
+      if(tagInfo.reason) {
+        tagMessage += `\n原因: ${tagInfo.reason}`;
+      }
+      await sendMessage({
+        chat_id: ADMIN_UID,
+        text: tagMessage
+      });
+    } catch(e) {
+      console.error('解析标记信息出错', e);
+    }
+  }
+
   
-  return handleNotify(message)
+  //return handleNotify(message)
 }
 
 async function handleNotify(message){
@@ -232,36 +231,11 @@ async function handleBlock(message){
   
   // 修复问题1：正确获取屏蔽原因
   let reason = message.text.substring(6).trim() || '无理由';
-  await nfd.put('isblocked-' + guestChatId, JSON.stringify({ 
-    blocked: true, 
-    reason: reason,
-    timestamp: Date.now()
-  }))
+  await nfd.put('isblocked-' + guestChatId, JSON.stringify({ blocked: true, reason: reason }))
   
   return sendMessage({
     chat_id: ADMIN_UID,
     text: `UID:${guestChatId} 屏蔽成功\n原因: ${reason}`,
-  })
-}
-
-// 新增：直接通过ID屏蔽用户
-async function handleBlockById(message, userId, reason = '无理由'){
-  if(userId === ADMIN_UID){
-    return sendMessage({
-      chat_id: ADMIN_UID,
-      text:'不能屏蔽自己'
-    })
-  }
-  
-  await nfd.put('isblocked-' + userId, JSON.stringify({ 
-    blocked: true, 
-    reason: reason,
-    timestamp: Date.now()
-  }))
-  
-  return sendMessage({
-    chat_id: ADMIN_UID,
-    text: `UID:${userId} 屏蔽成功\n原因: ${reason}`,
   })
 }
 
@@ -273,17 +247,7 @@ async function handleUnBlock(message){
 
   return sendMessage({
     chat_id: ADMIN_UID,
-    text:`UID:${guestChantId} 解除屏蔽成功`,
-  })
-}
-
-// 新增：直接通过ID解除屏蔽用户
-async function handleUnBlockById(message, userId){
-  await nfd.put('isblocked-' + userId, false)
-
-  return sendMessage({
-    chat_id: ADMIN_UID,
-    text:`UID:${userId} 解除屏蔽成功`,
+    text:`UID:${guestChantId}解除屏蔽成功`,
   })
 }
 
@@ -298,10 +262,6 @@ async function checkBlock(message){
     try {
       const blockInfo = typeof blockData === 'string' ? JSON.parse(blockData) : blockData;
       responseText += `已被屏蔽\n原因: ${blockInfo.reason || '无理由'}`;
-      if (blockInfo.timestamp) {
-        const blockDate = new Date(blockInfo.timestamp);
-        responseText += `\n屏蔽时间: ${blockDate.toLocaleString()}`;
-      }
     } catch (e) {
       responseText += '已被屏蔽，但无法获取详细信息';
     }
@@ -315,56 +275,101 @@ async function checkBlock(message){
   })
 }
 
-// 新增：列出所有被屏蔽的用户
-async function listBlocked(message) {
-  // 获取所有以"isblocked-"开头的键
-  // 由于 nfd 可能没有提供列出所有键的方法，这里实现可能需要根据实际情况调整
-  // 在实际环境中，可能需要维护一个单独的"已屏蔽用户列表"
+// 标记相关
+// 标记用户：既可以在回复的情况下标记，也支持直接指定ID
+async function handleTag(message) {
+  let guestChatId = null;
+  let reason = '';
   
-  // 这里假设有一个存储所有被屏蔽用户ID的列表
-  const blockedListKey = 'blocked-users-list';
-  let blockedList = await nfd.get(blockedListKey, { type: "json" }) || [];
-  
-  if (blockedList.length === 0) {
-    return sendMessage({
-      chat_id: ADMIN_UID,
-      text: '当前没有被屏蔽的用户'
-    });
-  }
-  
-  let responseText = '已屏蔽用户列表：\n\n';
-  
-  // 获取每个被屏蔽用户的详细信息
-  const promises = blockedList.map(async (userId) => {
-    const blockData = await nfd.get('isblocked-' + userId, { type: "json" });
-    if (!blockData) return null;
-    
-    try {
-      const blockInfo = typeof blockData === 'string' ? JSON.parse(blockData) : blockData;
-      if (!blockInfo.blocked) return null;
-      
-      let userInfo = `UID: ${userId}\n原因: ${blockInfo.reason || '无理由'}`;
-      if (blockInfo.timestamp) {
-        const blockDate = new Date(blockInfo.timestamp);
-        userInfo += `\n屏蔽时间: ${blockDate.toLocaleString()}`;
-      }
-      return userInfo;
-    } catch (e) {
-      return `UID: ${userId}\n无法获取详细信息`;
+  if (message.reply_to_message) {
+    // 从回复的消息中获取用户ID映射
+    guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+    reason = message.text.substring(4).trim() || '无理由'; // 去除命令部分（"/tag"）获取理由
+  } else {
+    // 支持直接指定用户ID，例如：/tag 12345 理由
+    let tokens = message.text.split(' ');
+    if(tokens.length >= 2){
+      guestChatId = tokens[1];
+      reason = tokens.slice(2).join(' ').trim() || '无理由';
     }
-  });
+  }
   
-  const userInfos = await Promise.all(promises);
-  const validUserInfos = userInfos.filter(info => info !== null);
-  
-  if (validUserInfos.length === 0) {
+  if (!guestChatId) {
     return sendMessage({
       chat_id: ADMIN_UID,
-      text: '当前没有有效的被屏蔽用户'
+      text: '无法获取用户ID，请回复用户消息或者直接指定ID'
     });
   }
   
-  responseText += validUserInfos.join('\n\n');
+  await nfd.put('istagged-' + guestChatId, JSON.stringify({ tagged: true, reason: reason }));
+  
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: `UID:${guestChatId} 标记成功\n原因: ${reason}`,
+  });
+}
+
+// 解除标记
+async function handleUnTag(message) {
+  let guestChatId = null;
+  
+  if (message.reply_to_message) {
+    guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+  } else {
+    let tokens = message.text.split(' ');
+    if(tokens.length >= 2){
+      guestChatId = tokens[1];
+    }
+  }
+  
+  if (!guestChatId) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: '无法获取用户ID，请回复用户消息或者直接指定ID'
+    });
+  }
+  
+  await nfd.put('istagged-' + guestChatId, false);
+  
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: `UID:${guestChatId} 解除标记成功`,
+  });
+}
+
+// 查询标记状态
+async function checkTag(message) {
+  let guestChatId = null;
+  
+  if (message.reply_to_message) {
+    guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+  } else {
+    let tokens = message.text.split(' ');
+    if(tokens.length >= 2){
+      guestChatId = tokens[1];
+    }
+  }
+  
+  if (!guestChatId) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: '无法获取用户ID，请回复用户消息或者直接指定ID'
+    });
+  }
+  
+  let tagData = await nfd.get('istagged-' + guestChatId, { type: "json" });
+  let responseText = `UID:${guestChatId} `;
+  
+  if (tagData) {
+    try {
+      const tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
+      responseText += `已被标记\n原因: ${tagInfo.reason || '无理由'}`;
+    } catch(e) {
+      responseText += '已被标记，但无法获取详细信息';
+    }
+  } else {
+    responseText += '未被标记';
+  }
   
   return sendMessage({
     chat_id: ADMIN_UID,
@@ -372,57 +377,7 @@ async function listBlocked(message) {
   });
 }
 
-// 辅助函数：将用户ID添加到被屏蔽列表
-async function addToBlockedList(userId) {
-  const blockedListKey = 'blocked-users-list';
-  let blockedList = await nfd.get(blockedListKey, { type: "json" }) || [];
-  
-  if (!blockedList.includes(userId)) {
-    blockedList.push(userId);
-    await nfd.put(blockedListKey, JSON.stringify(blockedList));
-  }
-}
 
-// 辅助函数：从被屏蔽列表中移除用户ID
-async function removeFromBlockedList(userId) {
-  const blockedListKey = 'blocked-users-list';
-  let blockedList = await nfd.get(blockedListKey, { type: "json" }) || [];
-  
-  const newList = blockedList.filter(id => id !== userId);
-  await nfd.put(blockedListKey, JSON.stringify(newList));
-}
-
-// 修改原有的 handleBlock 和 handleBlockById 函数，添加维护屏蔽列表的代码
-const originalHandleBlock = handleBlock;
-handleBlock = async function(message) {
-  const result = await originalHandleBlock(message);
-  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
-  await addToBlockedList(guestChatId);
-  return result;
-};
-
-const originalHandleBlockById = handleBlockById;
-handleBlockById = async function(message, userId, reason) {
-  const result = await originalHandleBlockById(message, userId, reason);
-  await addToBlockedList(userId);
-  return result;
-};
-
-// 修改原有的 handleUnBlock 和 handleUnBlockById 函数，添加维护屏蔽列表的代码
-const originalHandleUnBlock = handleUnBlock;
-handleUnBlock = async function(message) {
-  const result = await originalHandleUnBlock(message);
-  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
-  await removeFromBlockedList(guestChatId);
-  return result;
-};
-
-const originalHandleUnBlockById = handleUnBlockById;
-handleUnBlockById = async function(message, userId) {
-  const result = await originalHandleUnBlockById(message, userId);
-  await removeFromBlockedList(userId);
-  return result;
-};
 
 /**
  * Send plain text message

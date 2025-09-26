@@ -104,37 +104,94 @@ async function onMessage (message) {
     })
   }
   if(message.chat.id.toString() === ADMIN_UID){
-    if(!message?.reply_to_message?.chat){
-      return sendMessage({
-        chat_id:ADMIN_UID,
-        text:'使用方法，回复转发的消息，并发送回复消息，或者`/block`、`/unblock`、`/checkblock`等指令'
-      })
+    // 管理员命令区
+
+    // 查看屏蔽列表命令
+    if(message.text && message.text === '/blocklist'){
+      return listBlocked(message)
     }
-    if(message.text && message.text.startsWith('/block')){
-      return handleBlock(message)
-    }
-    if(message.text && message.text === '/unblock'){
-      return handleUnBlock(message)
-    }
-    if(message.text && message.text === '/checkblock'){
-      return checkBlock(message)
-    }
-    if(message.text && message.text.startsWith('/tag')){
-      return handleTag(message)
-    }
-    if(message.text && message.text.startsWith('/untag')){
-      return handleUnTag(message)
-    }
-    if(message.text && message.text === '/checktag'){
-      return checkTag(message)
+    
+    if(message.text && message.text === '/taglist'){
+      return listTagged(message)
     }
 
-    let guestChantId = await nfd.get('msg-map-' + message?.reply_to_message.message_id,
-                                      { type: "json" })
-    return copyMessage({
-      chat_id: guestChantId,
-      from_chat_id:message.chat.id,
-      message_id:message.message_id,
+    // 直接通过ID屏蔽/解除屏蔽命令
+    if(message.text && message.text.startsWith('/block ')){
+      const parts = message.text.split(' ')
+      if(parts.length >= 2 && /^\d+$/.test(parts[1])){
+        return handleBlockById(message, parts[1], parts.slice(2).join(' ') || '无理由')
+      }
+    }
+    
+    if(message.text && message.text.startsWith('/unblock ')){
+      const parts = message.text.split(' ')
+      if(parts.length >= 2 && /^\d+$/.test(parts[1])){
+        return handleUnBlockById(message, parts[1])
+      }
+    }
+    
+    // 直接通过ID标记/解除标记命令
+    if(message.text && message.text.startsWith('/tag ')){
+      const parts = message.text.split(' ')
+      if(parts.length >= 2 && /^\d+$/.test(parts[1])){
+        return handleTagById(message, parts[1], parts.slice(2).join(' ') || '无理由')
+      }
+    }
+    
+    if(message.text && message.text.startsWith('/untag ')){
+      const parts = message.text.split(' ')
+      if(parts.length >= 2 && /^\d+$/.test(parts[1])){
+        return handleUnTagById(message, parts[1])
+      }
+    }
+    
+    // 回复消息的命令
+    if(message?.reply_to_message?.chat){
+      if(message.text && message.text.startsWith('/block')){
+        return handleBlock(message)
+      }
+      if(message.text && message.text === '/unblock'){
+        return handleUnBlock(message)
+      }
+      if(message.text && message.text === '/checkblock'){
+        return checkBlock(message)
+      }
+      
+      if(message.text && message.text.startsWith('/tag')){
+        return handleTag(message)
+      }
+      if(message.text && message.text === '/untag'){
+        return handleUnTag(message)
+      }
+      if(message.text && message.text === '/checktag'){
+        return checkTag(message)
+      }
+      
+      let guestChantId = await nfd.get('msg-map-' + message.reply_to_message.message_id,
+                                        { type: "json" })
+      return copyMessage({
+        chat_id: guestChantId,
+        from_chat_id:message.chat.id,
+        message_id:message.message_id,
+      })
+    }
+    
+    return sendMessage({
+      chat_id:ADMIN_UID,
+      text:'使用方法：\n'
+      + '1. 回复转发的消息，并发送回复消息\n'
+      + '2. `/block [原因]` - 屏蔽用户（回复消息时）\n'
+      + '3. `/unblock` - 解除屏蔽（回复消息时）\n'
+      + '4. `/checkblock` - 检查屏蔽状态（回复消息时）\n'
+      + '5. `/block 用户ID [原因]` - 直接屏蔽指定用户ID\n'
+      + '6. `/unblock 用户ID` - 直接解除指定用户ID的屏蔽\n'
+      + '7. `/blocklist` - 查看所有已屏蔽的用户\n'
+      + '8. `/tag [原因]` - 标记用户（回复消息时）\n'
+      + '9. `/untag` - 解除标记（回复消息时）\n'
+      + '10. `/checktag` - 检查标记状态（回复消息时）\n'
+      + '11. `/tag 用户ID [原因]` - 直接标记指定用户ID\n'
+      + '12. `/untag 用户ID` - 直接解除指定用户ID的标记\n'
+      + '13. `/taglist` - 查看所有已标记的用户'
     })
   }
   return handleGuestMessage(message)
@@ -152,11 +209,11 @@ async function handleGuestMessage(message){
   }
   
   // 用户信息汇总
-  let forwardText = `💬 来自: ${message.from.first_name}`;
+  let forwardText = `🙎‍♂️ 用户姓名: ${message.from.first_name}`;
   if (message.from.username) {
     forwardText += ` (@${message.from.username})`;
   }
-  forwardText += `\n🆔 用户 ID: ${message.from.id}`;
+  forwardText += `\n🆔 用户标识: ${message.from.id}`;
   
   // 发送用户信息
   await sendMessage({
@@ -175,49 +232,27 @@ async function handleGuestMessage(message){
   if(forwardReq.ok){
     await nfd.put('msg-map-' + forwardReq.result.message_id, chatId)
   }
-
-  // 判断是否是标记用户，如果是，立即提醒管理员
-  let tagData = await nfd.get('istagged-' + chatId, { type: "json" })
-  if(tagData){
-    try {
-      let tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
-      let tagMessage = `🔖 已标记用户消息提醒:\nUID: ${chatId}`;
-      if(tagInfo.reason) {
-        tagMessage += `\n原因: ${tagInfo.reason}`;
-      }
-      await sendMessage({
-        chat_id: ADMIN_UID,
-        text: tagMessage
-      });
-    } catch(e) {
-      console.error('解析标记信息出错', e);
-    }
-  }
-
   
-  //return handleNotify(message)
-}
-
-async function handleNotify(message){
-  // 先判断是否是诈骗人员，如果是，则直接提醒
-  // 如果不是，则根据时间间隔提醒：用户id，交易注意点等
-  let chatId = message.chat.id;
-  if(await isFraud(chatId)){
-    return sendMessage({
-      chat_id: ADMIN_UID,
-      text:`检测到骗子，UID${chatId}`
-    })
-  }
-  if(enable_notification){
-    let lastMsgTime = await nfd.get('lastmsg-' + chatId, { type: "json" })
-    if(!lastMsgTime || Date.now() - lastMsgTime > NOTIFY_INTERVAL){
-      await nfd.put('lastmsg-' + chatId, Date.now())
-      return sendMessage({
-        chat_id: ADMIN_UID,
-        text:await fetch(notificationUrl).then(r => r.text())
-      })
+  // 如果用户已被标记，则提醒管理员
+  let tagData = await nfd.get('istagged-' + chatId, { type: "json" });
+  if(tagData){
+    try{
+      let tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
+      if(tagInfo.tagged){
+         let tagMsg = `🔖 标记用户消息提醒:\nUID: ${chatId}`;
+         if(tagInfo.reason) tagMsg += `\n原因: ${tagInfo.reason}`;
+         await sendMessage({
+            chat_id: ADMIN_UID,
+            text: tagMsg
+         });
+      }
+    } catch(e){
+      console.error('解析标记信息失败', e);
     }
   }
+  
+  // 如有需要，可继续调用其他提醒逻辑
+  // return handleNotify(message)
 }
 
 async function handleBlock(message){
@@ -229,9 +264,13 @@ async function handleBlock(message){
     })
   }
   
-  // 修复问题1：正确获取屏蔽原因
+  // 正确获取屏蔽原因
   let reason = message.text.substring(6).trim() || '无理由';
-  await nfd.put('isblocked-' + guestChatId, JSON.stringify({ blocked: true, reason: reason }))
+  await nfd.put('isblocked-' + guestChatId, JSON.stringify({ 
+    blocked: true, 
+    reason: reason,
+    timestamp: Date.now()
+  }))
   
   return sendMessage({
     chat_id: ADMIN_UID,
@@ -239,15 +278,46 @@ async function handleBlock(message){
   })
 }
 
+// 直接通过ID屏蔽用户
+async function handleBlockById(message, userId, reason = '无理由'){
+  if(userId === ADMIN_UID){
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text:'不能屏蔽自己'
+    })
+  }
+  
+  await nfd.put('isblocked-' + userId, JSON.stringify({ 
+    blocked: true, 
+    reason: reason,
+    timestamp: Date.now()
+  }))
+  
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: `UID:${userId} 屏蔽成功\n原因: ${reason}`,
+  })
+}
+
 async function handleUnBlock(message){
-  let guestChantId = await nfd.get('msg-map-' + message.reply_to_message.message_id,
+  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id,
   { type: "json" })
 
-  await nfd.put('isblocked-' + guestChantId, false)
+  await nfd.put('isblocked-' + guestChatId, false)
 
   return sendMessage({
     chat_id: ADMIN_UID,
-    text:`UID:${guestChantId}解除屏蔽成功`,
+    text:`UID:${guestChatId} 解除屏蔽成功`,
+  })
+}
+
+// 直接通过ID解除屏蔽用户
+async function handleUnBlockById(message, userId){
+  await nfd.put('isblocked-' + userId, false)
+
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text:`UID:${userId} 解除屏蔽成功`,
   })
 }
 
@@ -257,11 +327,14 @@ async function checkBlock(message){
   
   let responseText = `UID:${guestChatId} `;
   
-  // 修复问题1：正确解析屏蔽信息
   if (blockData) {
     try {
       const blockInfo = typeof blockData === 'string' ? JSON.parse(blockData) : blockData;
       responseText += `已被屏蔽\n原因: ${blockInfo.reason || '无理由'}`;
+      if (blockInfo.timestamp) {
+        const blockDate = new Date(blockInfo.timestamp);
+        responseText += `\n屏蔽时间: ${blockDate.toLocaleString()}`;
+      }
     } catch (e) {
       responseText += '已被屏蔽，但无法获取详细信息';
     }
@@ -275,81 +348,81 @@ async function checkBlock(message){
   })
 }
 
-// 标记相关
-// 标记用户：既可以在回复的情况下标记，也支持直接指定ID
+// ===== 新增标记功能 =====
+
+// 回复方式标记用户
 async function handleTag(message) {
-  let guestChatId = null;
-  let reason = '';
-  
-  if (message.reply_to_message) {
-    // 从回复的消息中获取用户ID映射
-    guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
-    reason = message.text.substring(4).trim() || '无理由'; // 去除命令部分（"/tag"）获取理由
-  } else {
-    // 支持直接指定用户ID，例如：/tag 12345 理由
-    let tokens = message.text.split(' ');
-    if(tokens.length >= 2){
-      guestChatId = tokens[1];
-      reason = tokens.slice(2).join(' ').trim() || '无理由';
-    }
-  }
-  
+  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+  let reason = message.text.substring(4).trim() || '无理由'; // 去掉"/tag"命令部分
   if (!guestChatId) {
     return sendMessage({
       chat_id: ADMIN_UID,
       text: '无法获取用户ID，请回复用户消息或者直接指定ID'
     });
   }
-  
-  await nfd.put('istagged-' + guestChatId, JSON.stringify({ tagged: true, reason: reason }));
-  
+  else{
+    await addToTaggedList(guestChatId);
+  }
+  await nfd.put('istagged-' + guestChatId, JSON.stringify({ tagged: true, reason: reason, timestamp: Date.now() }));
   return sendMessage({
     chat_id: ADMIN_UID,
-    text: `UID:${guestChatId} 标记成功\n原因: ${reason}`,
+    text: `UID:${guestChatId} 标记成功\n原因: ${reason}`
   });
 }
 
-// 解除标记
+// 直接通过ID标记用户
+async function handleTagById(message, userId, reason = '无理由') {
+  if(userId === ADMIN_UID){
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text:'不能标记自己'
+    })
+  }
+  await addToTaggedList(userId);
+  await nfd.put('istagged-' + userId, JSON.stringify({ tagged: true, reason: reason, timestamp: Date.now() }));
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: `UID:${userId} 标记成功\n原因: ${reason}`
+  });
+}
+
+// 回复方式解除标记
 async function handleUnTag(message) {
-  let guestChatId = null;
-  
-  if (message.reply_to_message) {
-    guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
-  } else {
-    let tokens = message.text.split(' ');
-    if(tokens.length >= 2){
-      guestChatId = tokens[1];
-    }
-  }
-  
+  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
   if (!guestChatId) {
     return sendMessage({
       chat_id: ADMIN_UID,
       text: '无法获取用户ID，请回复用户消息或者直接指定ID'
     });
+  }else{
+    await removeFromTaggedList(guestChatId);
   }
-  
   await nfd.put('istagged-' + guestChatId, false);
-  
   return sendMessage({
     chat_id: ADMIN_UID,
-    text: `UID:${guestChatId} 解除标记成功`,
+    text: `UID:${guestChatId} 解除标记成功`
   });
 }
 
-// 查询标记状态
+// 直接通过ID解除标记
+async function handleUnTagById(message, userId) {
+  await nfd.put('istagged-' + userId, false);
+  await removeFromTaggedList(userId);
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: `UID:${userId} 解除标记成功`
+  });
+}
+
+// 检查标记状态
 async function checkTag(message) {
-  let guestChatId = null;
-  
-  if (message.reply_to_message) {
-    guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
-  } else {
+  let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+  if (!guestChatId) {
     let tokens = message.text.split(' ');
     if(tokens.length >= 2){
       guestChatId = tokens[1];
     }
   }
-  
   if (!guestChatId) {
     return sendMessage({
       chat_id: ADMIN_UID,
@@ -363,9 +436,17 @@ async function checkTag(message) {
   if (tagData) {
     try {
       const tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
-      responseText += `已被标记\n原因: ${tagInfo.reason || '无理由'}`;
+      if(tagInfo.tagged){
+        responseText += `已被标记\n原因: ${tagInfo.reason || '无理由'}`;
+        if (tagInfo.timestamp) {
+          const tagDate = new Date(tagInfo.timestamp);
+          responseText += `\n标记时间: ${tagDate.toLocaleString()}`;
+        }
+      } else {
+        responseText += '未被标记';
+      }
     } catch(e) {
-      responseText += '已被标记，但无法获取详细信息';
+      responseText += '标记信息解析错误';
     }
   } else {
     responseText += '未被标记';
@@ -377,7 +458,152 @@ async function checkTag(message) {
   });
 }
 
+// ===== 结束新增标记功能 =====
 
+// 新增：列出所有被屏蔽的用户
+async function listBlocked(message) {
+  // 获取所有以"isblocked-"开头的键
+  // 此处假设维护了一个单独的"blocked-users-list"
+  const blockedListKey = 'blocked-users-list';
+  let blockedList = await nfd.get(blockedListKey, { type: "json" }) || [];
+  
+  if (blockedList.length === 0) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: '当前没有被屏蔽的用户'
+    });
+  }
+  
+  let responseText = '已屏蔽用户列表：\n\n';
+  
+  const promises = blockedList.map(async (userId) => {
+    const blockData = await nfd.get('isblocked-' + userId, { type: "json" });
+    if (!blockData) return null;
+    
+    try {
+      const blockInfo = typeof blockData === 'string' ? JSON.parse(blockData) : blockData;
+      if (!blockInfo.blocked) return null;
+      
+      let userInfo = `UID: ${userId}\n原因: ${blockInfo.reason || '无理由'}`;
+      if (blockInfo.timestamp) {
+        const blockDate = new Date(blockInfo.timestamp);
+        userInfo += `\n屏蔽时间: ${blockDate.toLocaleString()}`;
+      }
+      return userInfo;
+    } catch (e) {
+      return `UID: ${userId}\n无法获取详细信息`;
+    }
+  });
+  
+  const userInfos = await Promise.all(promises);
+  const validUserInfos = userInfos.filter(info => info !== null);
+  
+  if (validUserInfos.length === 0) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: '当前没有有效的被屏蔽用户'
+    });
+  }
+  
+  responseText += validUserInfos.join('\n\n');
+  
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: responseText
+  });
+}
+
+// 辅助函数：将用户ID添加到被屏蔽列表
+async function addToBlockedList(userId) {
+  const blockedListKey = 'blocked-users-list';
+  let blockedList = await nfd.get(blockedListKey, { type: "json" }) || [];
+  
+  if (!blockedList.includes(userId)) {
+    blockedList.push(userId);
+    await nfd.put(blockedListKey, JSON.stringify(blockedList));
+  }
+}
+
+// 辅助函数：从被屏蔽列表中移除用户ID
+async function removeFromBlockedList(userId) {
+  const blockedListKey = 'blocked-users-list';
+  let blockedList = await nfd.get(blockedListKey, { type: "json" }) || [];
+  
+  const newList = blockedList.filter(id => id !== userId);
+  await nfd.put(blockedListKey, JSON.stringify(newList));
+}
+
+// 新增：列出所有被标记的用户
+async function listTagged(message) {
+  // 获取所有标记用户列表
+  const taggedListKey = 'tagged-users-list';
+  let taggedList = await nfd.get(taggedListKey, { type: "json" }) || [];
+  
+  if (taggedList.length === 0) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: '当前没有被标记的用户'
+    });
+  }
+  
+  let responseText = '已标记用户列表：\n\n';
+  
+  const promises = taggedList.map(async (userId) => {
+    const tagData = await nfd.get('istagged-' + userId, { type: "json" });
+    if (!tagData) return null;
+    
+    try {
+      const tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
+      if (!tagInfo.tagged) return null;
+      
+      let userInfo = `UID: ${userId}\n原因: ${tagInfo.reason || '无理由'}`;
+      if (tagInfo.timestamp) {
+        const tagDate = new Date(tagInfo.timestamp);
+        userInfo += `\n标记时间: ${tagDate.toLocaleString()}`;
+      }
+      return userInfo;
+    } catch (e) {
+      return `UID: ${userId}\n无法获取详细信息`;
+    }
+  });
+  
+  const userInfos = await Promise.all(promises);
+  const validUserInfos = userInfos.filter(info => info !== null);
+  
+  if (validUserInfos.length === 0) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: '当前没有有效的被标记用户'
+    });
+  }
+  
+  responseText += validUserInfos.join('\n\n');
+  
+  return sendMessage({
+    chat_id: ADMIN_UID,
+    text: responseText
+  });
+}
+
+// 辅助函数：将用户ID添加到标记列表
+async function addToTaggedList(userId) {
+  const taggedListKey = 'tagged-users-list';
+  let taggedList = await nfd.get(taggedListKey, { type: "json" }) || [];
+  
+  if (!taggedList.includes(userId)) {
+    taggedList.push(userId);
+    await nfd.put(taggedListKey, JSON.stringify(taggedList));
+  }
+}
+
+// 辅助函数：从标记列表中移除用户ID
+async function removeFromTaggedList(userId) {
+  const taggedListKey = 'tagged-users-list';
+  let taggedList = await nfd.get(taggedListKey, { type: "json" }) || [];
+  
+  const newList = taggedList.filter(id => id !== userId);
+  await nfd.put(taggedListKey, JSON.stringify(newList));
+}
 
 /**
  * Send plain text message
@@ -395,7 +621,6 @@ async function sendPlainText (chatId, text) {
  * https://core.telegram.org/bots/api#setwebhook
  */
 async function registerWebhook (event, requestUrl, suffix, secret) {
-  // https://core.telegram.org/bots/api#setwebhook
   const webhookUrl = `${requestUrl.protocol}//${requestUrl.hostname}${suffix}`
   const r = await (await fetch(apiUrl('setWebhook', { url: webhookUrl, secret_token: secret }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))

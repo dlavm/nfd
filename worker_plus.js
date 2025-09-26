@@ -111,7 +111,7 @@ async function onMessage (message) {
       return listBlocked(message)
     }
     
-    if(message.text && message.text === '/taglist'){
+    if(message.text && (message.text === '/taglist' || message.text.startsWith('/taglist_'))){
       return listTagged(message)
     }
 
@@ -191,7 +191,7 @@ async function onMessage (message) {
       + '10. `/checktag` - 检查标记状态（回复消息时）\n'
       + '11. `/tag 用户ID [原因]` - 直接标记指定用户ID\n'
       + '12. `/untag 用户ID` - 直接解除指定用户ID的标记\n'
-      + '13. `/taglist` - 查看所有已标记的用户'
+      + '13. `/taglist` 或 `/taglist_2`（显示第2页） - 查看所有已标记的用户或者按页码显示'
     })
   }
   return handleGuestMessage(message)
@@ -534,8 +534,20 @@ async function removeFromBlockedList(userId) {
 }
 
 // 新增：列出所有被标记的用户
+// 改进的 listTagged 函数
 async function listTagged(message) {
-  // 获取所有标记用户列表
+  const MAX_MESSAGE_LENGTH = 4000; // Telegram 限制 4096，留点余量
+  const USERS_PER_BATCH = 10; // 每批处理的用户数量
+  
+  // 解析页码参数
+  let page = 1;
+  if (message.text.includes('_')) {
+    const parts = message.text.split('_');
+    if (parts.length > 1 && /^\d+$/.test(parts[1])) {
+      page = parseInt(parts[1]);
+    }
+  }
+  
   const taggedListKey = 'tagged-users-list';
   let taggedList = await nfd.get(taggedListKey, { type: "json" }) || [];
   
@@ -546,38 +558,70 @@ async function listTagged(message) {
     });
   }
   
-  let responseText = '已标记用户列表：\n\n';
-  
-  const promises = taggedList.map(async (userId) => {
-    const tagData = await nfd.get('istagged-' + userId, { type: "json" });
-    if (!tagData) return null;
-    
-    try {
-      const tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
-      if (!tagInfo.tagged) return null;
-      
-      let userInfo = `UID: ${userId}\n原因: ${tagInfo.reason || '无理由'}`;
-      if (tagInfo.timestamp) {
-        const tagDate = new Date(tagInfo.timestamp);
-        userInfo += `\n标记时间: ${tagDate.toLocaleString()}`;
-      }
-      return userInfo;
-    } catch (e) {
-      return `UID: ${userId}\n无法获取详细信息`;
-    }
-  });
-  
-  const userInfos = await Promise.all(promises);
-  const validUserInfos = userInfos.filter(info => info !== null);
-  
-  if (validUserInfos.length === 0) {
+  // 计算分页
+  const totalPages = Math.ceil(taggedList.length / USERS_PER_BATCH);
+  if (page > totalPages) {
     return sendMessage({
       chat_id: ADMIN_UID,
-      text: '当前没有有效的被标记用户'
+      text: `页码超出范围。总共 ${totalPages} 页，每页显示 ${USERS_PER_BATCH} 个用户。`
     });
   }
   
-  responseText += validUserInfos.join('\n\n');
+  const startIndex = (page - 1) * USERS_PER_BATCH;
+  const endIndex = Math.min(startIndex + USERS_PER_BATCH, taggedList.length);
+  const currentPageUsers = taggedList.slice(startIndex, endIndex);
+  
+  // 批量获取用户信息，限制并发数
+  const userInfos = [];
+  for (let i = 0; i < currentPageUsers.length; i++) {
+    const userId = currentPageUsers[i];
+    try {
+      const tagData = await nfd.get('istagged-' + userId, { type: "json" });
+      if (!tagData) continue;
+      
+      const tagInfo = typeof tagData === 'string' ? JSON.parse(tagData) : tagData;
+      if (!tagInfo.tagged) continue;
+      
+      let userInfo = `${i + startIndex + 1}. UID: ${userId}\n   原因: ${tagInfo.reason || '无理由'}`;
+      if (tagInfo.timestamp) {
+        const tagDate = new Date(tagInfo.timestamp);
+        userInfo += `\n   时间: ${tagDate.toLocaleString()}`;
+      }
+      userInfos.push(userInfo);
+    } catch (e) {
+      userInfos.push(`${i + startIndex + 1}. UID: ${userId}\n   无法获取详细信息`);
+    }
+  }
+  
+  if (userInfos.length === 0) {
+    return sendMessage({
+      chat_id: ADMIN_UID,
+      text: `第 ${page} 页没有有效的标记用户`
+    });
+  }
+  
+  // 构建响应消息
+  let responseText = `已标记用户列表 (第${page}/${totalPages}页)：\n`;
+  responseText += `总计: ${taggedList.length} 个用户\n\n`;
+  responseText += userInfos.join('\n\n');
+  
+  // 添加分页导航提示
+  if (totalPages > 1) {
+    responseText += '\n\n━━━━━━━━━━━━━━━━━━\n';
+    if (page > 1) {
+      responseText += `上一页: /taglist_${page - 1}\n`;
+    }
+    if (page < totalPages) {
+      responseText += `下一页: /taglist_${page + 1}\n`;
+    }
+    responseText += `跳转页码: /taglist_[页码]`;
+  }
+  
+  // 检查消息长度，如果还是太长就进一步截断
+  if (responseText.length > MAX_MESSAGE_LENGTH) {
+    const truncateNotice = '\n\n... (内容过长，已截断)';
+    responseText = responseText.substring(0, MAX_MESSAGE_LENGTH - truncateNotice.length) + truncateNotice;
+  }
   
   return sendMessage({
     chat_id: ADMIN_UID,
@@ -604,6 +648,38 @@ async function removeFromTaggedList(userId) {
   const newList = taggedList.filter(id => id !== userId);
   await nfd.put(taggedListKey, JSON.stringify(newList));
 }
+
+// // 修改原有的 handleBlock 和 handleBlockById 函数，添加维护屏蔽列表的代码
+// const originalHandleBlock = handleBlock;
+// handleBlock = async function(message) {
+//   const result = await originalHandleBlock(message);
+//   let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+//   await addToBlockedList(guestChatId);
+//   return result;
+// };
+
+// const originalHandleBlockById = handleBlockById;
+// handleBlockById = async function(message, userId, reason) {
+//   const result = await originalHandleBlockById(message, userId, reason);
+//   await addToBlockedList(userId);
+//   return result;
+// };
+
+// // 修改原有的 handleUnBlock 和 handleUnBlockById 函数，添加维护屏蔽列表的代码
+// const originalHandleUnBlock = handleUnBlock;
+// handleUnBlock = async function(message) {
+//   const result = await originalHandleUnBlock(message);
+//   let guestChatId = await nfd.get('msg-map-' + message.reply_to_message.message_id, { type: "json" });
+//   await removeFromBlockedList(guestChatId);
+//   return result;
+// };
+
+// const originalHandleUnBlockById = handleUnBlockById;
+// handleUnBlockById = async function(message, userId) {
+//   const result = await originalHandleUnBlockById(message, userId);
+//   await removeFromBlockedList(userId);
+//   return result;
+// };
 
 /**
  * Send plain text message
